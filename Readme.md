@@ -1,15 +1,78 @@
--- =========================================================
--- SentraAuth-CLI - Database Setup Script
--- Jalankan seluruh file ini di MySQL (mysql -u root -p < database_setup.sql)
--- atau copy-paste isinya ke dalam prompt mysql> satu per satu.
--- =========================================================
+# SentraAuth-CLI
 
+A hardened Command Line Interface (CLI) authentication and access control system with a role-based security finding tracker case study.
+
+---
+
+## Overview
+
+SentraAuth-CLI addresses standard security flaws commonly found in introductory database scripts—such as plaintext password storage, lack of brute-force prevention, and hardcoded role checks—by implementing a defense-in-depth architecture directly within the terminal.
+
+### Core Defenses
+* **Password Hashing:** Passwords hashed with `bcrypt` using per-user random salt generation.
+* **Account Lockout:** Locks account for 5 minutes after 5 consecutive failed attempts; status and timestamps are stored directly in MySQL.
+* **Data-Driven RBAC:** Dynamic permission verification querying `roles` and `role_permissions` instead of hardcoded `if-else` blocks.
+* **Multi-Factor Authentication (MFA):** RFC 6238 TOTP standard via `pyotp` with in-terminal ASCII QR code rendering via `qrcode`.
+* **Fail-Silent Audit Logging:** Centralized tracking in `audit_log` for authentication, authorization, and administrative events.
+* **Self-Security Check:** Built-in VAPT-style scanner checking for default credentials, active admin MFA, and `.env` exposure.
+* **Security Finding Tracker:** Applied operational case study demonstrating data-driven RBAC separation between `admin` and `analyst` workflows.
+
+---
+
+## Database Architecture
+
+The system uses a relational database schema (`sentra_auth`) containing five tables:
+
+```text
+  +-------+          +------------------+
+  | roles |<---1:N---| role_permissions |
+  +---+---+          +------------------+
+      |
+     1:N
+      |
+  +---+---+          +------------------+
+  | users |----1:N---|     findings     |
+  +---+---+          +------------------+
+      :
+     1:N (via username)
+      :
+  +---+---+
+  | audit |
+  +-------+
+```
+*(Audit logs track activity by username rather than a cascading foreign key to preserve historical audit trails if an account is deleted).*
+
+---
+
+## Installation & Setup
+
+### 1. Prerequisites
+* Python 3.10+
+* MySQL Server (via Laragon, XAMPP, or standalone MySQL service)
+
+### 2. Install Dependencies
+```bash
+pip install mysql-connector-python bcrypt pyotp qrcode python-dotenv rich
+```
+
+### 3. Environment Configuration
+Create a `.env` file in the root directory:
+```env
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=sentra_auth
+```
+*(Leave `DB_PASSWORD` blank if using default Laragon / XAMPP configurations).*
+
+### 4. Database Setup
+Save the schema below as `database_setup.sql`:
+
+```sql
 CREATE DATABASE IF NOT EXISTS sentra_auth;
 USE sentra_auth;
 
--- =========================================================
--- TABEL: roles
--- =========================================================
+-- Roles Table
 CREATE TABLE roles (
     id INT AUTO_INCREMENT PRIMARY KEY,
     role_name VARCHAR(20) UNIQUE NOT NULL
@@ -17,9 +80,7 @@ CREATE TABLE roles (
 
 INSERT INTO roles (role_name) VALUES ('admin'), ('analyst');
 
--- =========================================================
--- TABEL: role_permissions
--- =========================================================
+-- Role Permissions Table
 CREATE TABLE role_permissions (
     id INT AUTO_INCREMENT PRIMARY KEY,
     role_id INT NOT NULL,
@@ -27,7 +88,7 @@ CREATE TABLE role_permissions (
     FOREIGN KEY (role_id) REFERENCES roles(id)
 );
 
--- role_id 1 = admin, role_id 2 = analyst
+-- Default Role Permissions Mapping
 INSERT INTO role_permissions (role_id, permission_name) VALUES
 (1, 'manage_accounts'),
 (1, 'view_accounts'),
@@ -37,9 +98,7 @@ INSERT INTO role_permissions (role_id, permission_name) VALUES
 (2, 'change_own_password'),
 (2, 'submit_finding');
 
--- =========================================================
--- TABEL: users
--- =========================================================
+-- Users Table
 CREATE TABLE users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
@@ -53,18 +112,7 @@ CREATE TABLE users (
     FOREIGN KEY (role_id) REFERENCES roles(id)
 );
 
--- Catatan: tabel users SENGAJA dibiarkan kosong di sini.
--- Akun default (admin, budi) diisi lewat skrip Python terpisah
--- (seed_users.py), BUKAN lewat SQL, karena password harus di-hash
--- dengan bcrypt terlebih dahulu, dan bcrypt hanya bisa dijalankan
--- dari kode Python, bukan dari SQL murni.
---
--- Setelah menjalankan file ini, jalankan:
---     python seed_users.py
-
--- =========================================================
--- TABEL: audit_log
--- =========================================================
+-- Centralized Audit Trail Table
 CREATE TABLE audit_log (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50),
@@ -74,9 +122,7 @@ CREATE TABLE audit_log (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- =========================================================
--- TABEL: findings
--- =========================================================
+-- Security Finding Tracker Case Study Table
 CREATE TABLE findings (
     id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(150) NOT NULL,
@@ -88,10 +134,61 @@ CREATE TABLE findings (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+```
 
--- =========================================================
--- VERIFIKASI (opsional, jalankan manual untuk mengecek hasil)
--- =========================================================
--- SHOW TABLES;
--- SELECT * FROM roles;
--- SELECT * FROM role_permissions;"# SentraAuth" 
+Import the schema into your MySQL service:
+```bash
+mysql -u root < database_setup.sql
+```
+*(If a password is set on your database user, append `-p`).*
+
+### 5. Account Seeding
+Populate initial accounts with bcrypt hashes directly via Python:
+```bash
+python seed_users.py
+```
+
+Default seeded accounts:
+* `admin` / `adminjuga` (Role: Admin)
+* `budi` / `budi123` (Role: Analyst)
+
+---
+
+## Running the Application
+
+### Interactive CLI Menu
+```bash
+python main.py
+```
+
+### Self-Security Audit Scanner
+Run the internal configuration and baseline scanner directly from the CLI:
+```bash
+python main.py --security-audit
+```
+
+---
+
+## Access Control Matrix
+
+| Feature / Capability | Admin Role | Analyst Role |
+| :--- | :---: | :---: |
+| Password Authentication & MFA Verification | Yes | Yes |
+| Change Own Password | Yes | Yes |
+| Enable / Manage Own MFA | Yes | Yes |
+| View System Accounts | Yes | No |
+| Add / Delete / Renew User Accounts | Yes | No |
+| View System-Wide Audit Log | Yes | No |
+| Run Self Security-Check Audit | Yes | No |
+| Submit New Security Finding | No | Yes |
+| View Personal Findings Only | No | Yes |
+| View All System Findings | Yes | No |
+| Update Status / Assign / Delete Findings | Yes | No |
+
+---
+
+## Known Limitations
+
+* **Plaintext MFA Secrets:** TOTP secret keys are stored unencrypted in the database.
+* **Session Expiry:** Sessions persist in terminal runtime memory without idle timeout revocation.
+* **Independent TOTP Rate Limiting:** Account lockout applies to initial password verification, not consecutive invalid OTP code submissions.
